@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Artist.Name}} | Groupie Tracker Visualizations</title>
+    <title>{{.Artist.Name}} | Groupie Tracker Geolocalization</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="/static/style.css">
+    <script defer src="/static/ui.js"></script>
 </head>
 <body>
     <div class="site-shell">
@@ -18,9 +20,9 @@
                 <img src="{{.Artist.Image}}" alt="{{.Artist.Name}}">
             </div>
             <div class="detail-hero__content">
-                <p class="eyebrow">Artist detail</p>
+                <p class="eyebrow">Artist geolocalization</p>
                 <h1>{{.Artist.Name}}</h1>
-                <p class="hero-text">Artist history, lineup, concert locations, and date density presented from the Groupie Tracker API.</p>
+                <p class="hero-text">Artist history, lineup, concert locations, map markers, and the tour path generated from Groupie Tracker API data.</p>
 
                 <div class="detail-stats">
                     <article class="stat-box">
@@ -65,6 +67,10 @@
                     <span>Timeline stops</span>
                     <strong>{{.Summary.ConcertCount}}</strong>
                 </article>
+                <article class="summary-stat">
+                    <span>Mapped stops</span>
+                    <strong>{{len .MapStops}}</strong>
+                </article>
                 <article class="summary-stat summary-stat--wide">
                     <span>Busiest stop</span>
                     {{if .Summary.PeakStop.Location}}
@@ -73,6 +79,28 @@
                     <strong>Not available</strong>
                     {{end}}
                 </article>
+            </section>
+
+            <section class="panel">
+                <div class="panel__heading">
+                    <p class="eyebrow">Geocoded route</p>
+                    <h2>Concert locations map</h2>
+                </div>
+
+                {{if .MapStops}}
+                <div id="concert-map" class="concert-map" aria-label="{{.Artist.Name}} concert locations map"></div>
+                <script id="concert-map-data" type="application/json">{{toJSON .MapStops}}</script>
+                <ol class="route-list" aria-label="Historical concert route">
+                    {{range .MapStops}}
+                    <li>
+                        <span>{{.DisplayLocation}}</span>
+                        <small>{{index .Dates 0 | formatDate}}</small>
+                    </li>
+                    {{end}}
+                </ol>
+                {{else}}
+                <p class="muted-text">No mapped concert locations are available for this artist right now.</p>
+                {{end}}
             </section>
 
             <section class="panel">
@@ -150,5 +178,7 @@
             </section>
         </main>
     </div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/static/map.js"></script>
 </body>
 </html>

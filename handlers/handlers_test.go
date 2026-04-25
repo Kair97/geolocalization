@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -106,6 +107,42 @@ func TestBuildConcertsAddsActivityMetrics(t *testing.T) {
 
 	if concerts[1].BarWidth != 100 {
 		t.Fatalf("expected largest activity bar to be 100, got %+v", concerts[1])
+	}
+}
+
+func TestBuildMapStopsOrdersConcertsHistorically(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("q") {
+		case "berlin germany":
+			_, _ = w.Write([]byte(`[{"lat":"52.5200","lon":"13.4050"}]`))
+		case "los angeles United States":
+			_, _ = w.Write([]byte(`[{"lat":"34.0522","lon":"-118.2437"}]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer server.Close()
+
+	previousURL := api.GeocodeBaseURL
+	api.GeocodeBaseURL = server.URL
+	t.Cleanup(func() {
+		api.GeocodeBaseURL = previousURL
+	})
+
+	stops := buildMapStops(context.Background(), []ConcertStop{
+		{Location: "los_angeles-usa", Dates: []string{"12-08-2021"}},
+		{Location: "berlin-germany", Dates: []string{"02-01-2020"}},
+	})
+
+	if len(stops) != 2 {
+		t.Fatalf("expected two mapped stops, got %+v", stops)
+	}
+	if stops[0].Location != "berlin-germany" || stops[1].Location != "los_angeles-usa" {
+		t.Fatalf("expected historical route order, got %+v", stops)
+	}
+	if stops[0].Latitude != 52.52 || stops[1].Longitude != -118.2437 {
+		t.Fatalf("unexpected mapped coordinates: %+v", stops)
 	}
 }
 

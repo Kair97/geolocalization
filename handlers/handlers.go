@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"groupie-tracker/api"
@@ -41,7 +43,17 @@ type ArtistPageData struct {
 	Locations []string
 	Dates     []string
 	Concerts  []ConcertStop
+	MapStops  []MapStop
 	Summary   ArtistSummary
+}
+
+type MapStop struct {
+	Location        string   `json:"location"`
+	DisplayLocation string   `json:"displayLocation"`
+	Dates           []string `json:"dates"`
+	Latitude        float64  `json:"latitude"`
+	Longitude       float64  `json:"longitude"`
+	Source          string   `json:"source"`
 }
 
 type VisualizationData struct {
@@ -87,6 +99,7 @@ type ErrorPageData struct {
 var templateFuncs = template.FuncMap{
 	"formatDate":     formatDate,
 	"formatLocation": formatLocation,
+	"toJSON":         toJSON,
 }
 
 func IndexHandler(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +109,7 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path != "/" {
-		renderError(w, http.StatusNotFound, "Page not found", "The page you requested does not exist. Return to the visual dashboard to keep exploring artists.", "/", "Back to dashboard")
+		renderError(w, http.StatusNotFound, "Page not found", "The page you requested does not exist. Return to the geolocalization dashboard to keep exploring artists.", "/", "Back to dashboard")
 		return
 	}
 
@@ -159,6 +172,7 @@ func ArtistHandler(w http.ResponseWriter, r *http.Request) {
 		Dates:     dateMap[id],
 		Concerts:  buildConcerts(id, relations.Index),
 	}
+	data.MapStops = buildMapStops(r.Context(), data.Concerts)
 	data.Summary = buildArtistSummary(data.Locations, data.Dates, data.Concerts)
 
 	err = renderTemplate(w, "templates/artist.html", data)
@@ -530,6 +544,48 @@ func buildConcerts(id int, relations []models.Relation) []ConcertStop {
 	return nil
 }
 
+func buildMapStops(ctx context.Context, concerts []ConcertStop) []MapStop {
+	orderedConcerts := append([]ConcertStop(nil), concerts...)
+	sort.SliceStable(orderedConcerts, func(i, j int) bool {
+		left := firstConcertDate(orderedConcerts[i].Dates)
+		right := firstConcertDate(orderedConcerts[j].Dates)
+		if left.Equal(right) {
+			return formatLocation(orderedConcerts[i].Location) < formatLocation(orderedConcerts[j].Location)
+		}
+		return left.Before(right)
+	})
+
+	stops := make([]MapStop, 0, len(orderedConcerts))
+	for _, concert := range orderedConcerts {
+		coordinate, source, err := api.GeocodeLocation(ctx, concert.Location)
+		if err != nil {
+			continue
+		}
+
+		stops = append(stops, MapStop{
+			Location:        concert.Location,
+			DisplayLocation: formatLocation(concert.Location),
+			Dates:           concert.Dates,
+			Latitude:        coordinate.Latitude,
+			Longitude:       coordinate.Longitude,
+			Source:          source,
+		})
+	}
+
+	return stops
+}
+
+func firstConcertDate(dates []string) time.Time {
+	for _, value := range dates {
+		date, err := time.Parse("02-01-2006", value)
+		if err == nil {
+			return date
+		}
+	}
+
+	return time.Time{}
+}
+
 func buildArtistSummary(locations, dates []string, concerts []ConcertStop) ArtistSummary {
 	summary := ArtistSummary{
 		LocationCount: len(locations),
@@ -710,6 +766,15 @@ func formatDate(value string) string {
 	}
 
 	return date.Format("02 Jan 2006")
+}
+
+func toJSON(value interface{}) template.JS {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "[]"
+	}
+
+	return template.JS(data)
 }
 
 func sortDates(dates []string) {
