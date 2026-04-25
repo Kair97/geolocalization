@@ -16,6 +16,7 @@ func main() {
 	mux.HandleFunc("/", handlers.IndexHandler)
 	mux.HandleFunc("/artist", handlers.ArtistHandler)
 	mux.HandleFunc("/search", handlers.SearchHandler)
+	mux.HandleFunc("/suggest", handlers.SuggestHandler)
 
 	fmt.Println("Server starting on http://localhost:8080")
 

@@ -146,6 +146,71 @@ func TestBuildMapStopsOrdersConcertsHistorically(t *testing.T) {
 	}
 }
 
+func TestSearchArtistsMatchesRequiredFields(t *testing.T) {
+	artists := []models.Artist{
+		{ID: 1, Name: "Scorpions", Members: []string{"Klaus Meine"}, CreationDate: 1965, FirstAlbum: "09-02-1972"},
+		{ID: 2, Name: "The Jimi Hendrix Experience", Members: []string{"Jimi Hendrix"}, CreationDate: 1966, FirstAlbum: "12-05-1967"},
+		{ID: 3, Name: "Pink Floyd", Members: []string{"David Gilmour"}, CreationDate: 1965, FirstAlbum: "05-08-1967"},
+		{ID: 4, Name: "ACDC", Members: []string{"Angus Young"}, CreationDate: 1973, FirstAlbum: "01-01-1975"},
+		{ID: 5, Name: "Queen", Members: []string{"Freddie Mercury"}, CreationDate: 1970, FirstAlbum: "13-07-1973"},
+		{ID: 6, Name: "Queensland", Members: []string{"Example Member"}, CreationDate: 2001, FirstAlbum: "01-01-2002"},
+	}
+	locations := []models.Location{
+		{ID: 3, Locations: []string{"london-uk"}},
+	}
+
+	memberResults := searchArtists(artists, locations, "Jimi Hendrix")
+	if len(memberResults) != 1 || memberResults[0].Artist.Name != "The Jimi Hendrix Experience" {
+		t.Fatalf("expected member search to return The Jimi Hendrix Experience, got %+v", memberResults)
+	}
+
+	locationResults := searchArtists(artists, locations, "london-uk")
+	if len(locationResults) != 1 || locationResults[0].Artist.Name != "Pink Floyd" {
+		t.Fatalf("expected location search to return Pink Floyd, got %+v", locationResults)
+	}
+
+	albumResults := searchArtists(artists, locations, "05-08-1967")
+	if len(albumResults) != 1 || albumResults[0].Artist.Name != "Pink Floyd" {
+		t.Fatalf("expected first album search to return Pink Floyd, got %+v", albumResults)
+	}
+
+	creationResults := searchArtists(artists, locations, "1965")
+	if len(creationResults) != 2 || creationResults[0].Artist.Name != "Pink Floyd" || creationResults[1].Artist.Name != "Scorpions" {
+		t.Fatalf("expected creation date search to return Pink Floyd and Scorpions, got %+v", creationResults)
+	}
+
+	queenResults := searchArtists(artists, locations, "queen")
+	if len(queenResults) != 2 || queenResults[0].Artist.Name != "Queen" || queenResults[1].Artist.Name != "Queensland" {
+		t.Fatalf("expected case-insensitive queen search to return Queen and Queensland, got %+v", queenResults)
+	}
+}
+
+func TestBuildSearchSuggestionsLabelsTypes(t *testing.T) {
+	artists := []models.Artist{
+		{ID: 1, Name: "Green Day", Members: []string{"Billie Joe Armstrong"}, CreationDate: 1987, FirstAlbum: "10-04-1990"},
+		{ID: 2, Name: "Queen", Members: []string{"Freddie Mercury"}, CreationDate: 1970, FirstAlbum: "13-07-1973"},
+	}
+	locations := []models.Location{
+		{ID: 1, Locations: []string{"saitama-japan", "osaka-japan", "nagoya-japan"}},
+	}
+
+	memberSuggestions := buildSearchSuggestions(artists, locations, "Billie Joe", 12)
+	if len(memberSuggestions) == 0 || memberSuggestions[0].Value != "Billie Joe Armstrong" || memberSuggestions[0].Type != "member" {
+		t.Fatalf("expected Billie Joe Armstrong member suggestion, got %+v", memberSuggestions)
+	}
+
+	locationSuggestions := buildSearchSuggestions(artists, locations, "Japan", 12)
+	values := make(map[string]string)
+	for _, suggestion := range locationSuggestions {
+		values[suggestion.Value] = suggestion.Type
+	}
+	for _, location := range []string{"saitama-japan", "osaka-japan", "nagoya-japan"} {
+		if values[location] != "location" {
+			t.Fatalf("expected %s location suggestion, got %+v", location, locationSuggestions)
+		}
+	}
+}
+
 func TestIndexHandlerRendersStyled404ForUnknownRoute(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {

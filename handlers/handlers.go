@@ -29,6 +29,17 @@ type ArtistCard struct {
 	models.Artist
 	LocationCount int
 	DateCount     int
+	MatchSummary  string
+}
+
+type SearchSuggestion struct {
+	Value string `json:"value"`
+	Type  string `json:"type"`
+}
+
+type SearchResult struct {
+	Artist  models.Artist
+	Matches []SearchSuggestion
 }
 
 type ConcertStop struct {
@@ -109,7 +120,7 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path != "/" {
-		renderError(w, http.StatusNotFound, "Page not found", "The page you requested does not exist. Return to the geolocalization dashboard to keep exploring artists.", "/", "Back to dashboard")
+		renderError(w, http.StatusNotFound, "Page not found", "The page you requested does not exist. Return to the search dashboard to keep exploring artists.", "/", "Back to dashboard")
 		return
 	}
 
@@ -198,7 +209,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 	if query == "" {
 		err = renderIndex(w, IndexPageData{
 			Artists: buildArtistCards(artists, locations.Index, dates.Index),
-			Message: "Type an artist name to search the collection.",
+			Message: "Search by artist, member, location, first album date, or creation date.",
 			Visuals: buildVisualizationData(artists, locations.Index, dates.Index),
 		})
 		if err != nil {
@@ -212,23 +223,36 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 		Visuals: buildVisualizationData(artists, locations.Index, dates.Index),
 	}
 
-	matches := findArtists(artists, query)
-	data.Artists = buildArtistCards(matches, locations.Index, dates.Index)
+	matches := searchArtists(artists, locations.Index, query)
+	data.Artists = buildSearchResultCards(matches, locations.Index, dates.Index)
 	if len(data.Artists) > 0 {
 		data.Message = fmt.Sprintf("Showing %d result%s for \"%s\".", len(data.Artists), plural(len(data.Artists)), query)
 	} else {
-		suggestions := suggestArtists(artists, query)
-		data.Artists = buildArtistCards(suggestions, locations.Index, dates.Index)
-		if len(data.Artists) > 0 {
-			data.Message = fmt.Sprintf("No exact match for \"%s\". Similar artists you may mean:", query)
-		} else {
-			data.Message = fmt.Sprintf("No artist found for \"%s\".", query)
-		}
+		data.Message = fmt.Sprintf("No artist, member, location, album date, or creation date matched \"%s\".", query)
 	}
 
 	err = renderIndex(w, data)
 	if err != nil {
 		http.Error(w, "Failed to render template", http.StatusInternalServerError)
+	}
+}
+
+func SuggestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	artists, locations, _, err := loadIndexResources()
+	if err != nil {
+		http.Error(w, "Failed to fetch suggestions", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(buildSearchSuggestions(artists, locations.Index, query, 12)); err != nil {
+		http.Error(w, "Failed to encode suggestions", http.StatusInternalServerError)
 	}
 }
 
@@ -372,6 +396,22 @@ func buildArtistCards(artists []models.Artist, locations []models.Location, date
 			LocationCount: len(locationMap[artist.ID]),
 			DateCount:     len(dateMap[artist.ID]),
 		})
+	}
+
+	return cards
+}
+
+func buildSearchResultCards(results []SearchResult, locations []models.Location, dates []models.Date) []ArtistCard {
+	artists := make([]models.Artist, 0, len(results))
+	matchSummaries := make(map[int]string, len(results))
+	for _, result := range results {
+		artists = append(artists, result.Artist)
+		matchSummaries[result.Artist.ID] = describeMatches(result.Matches)
+	}
+
+	cards := buildArtistCards(artists, locations, dates)
+	for i := range cards {
+		cards[i].MatchSummary = matchSummaries[cards[i].ID]
 	}
 
 	return cards
@@ -615,119 +655,171 @@ func relativeWidth(value, maxValue int) int {
 	return width
 }
 
-func findArtists(artists []models.Artist, query string) []models.Artist {
-	normalizedQuery := normalize(query)
+func searchArtists(artists []models.Artist, locations []models.Location, query string) []SearchResult {
+	normalizedQuery := normalizeSearch(query)
 	if normalizedQuery == "" {
 		return nil
 	}
 
-	var matches []models.Artist
+	locationMap := buildRawLocationMap(locations)
+	results := make([]SearchResult, 0)
 	for _, artist := range artists {
-		if strings.Contains(normalize(artist.Name), normalizedQuery) {
-			matches = append(matches, artist)
+		matches := searchArtistMatches(artist, locationMap[artist.ID], normalizedQuery)
+		if len(matches) > 0 {
+			results = append(results, SearchResult{
+				Artist:  artist,
+				Matches: matches,
+			})
 		}
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		left := bestMatchRank(results[i].Matches)
+		right := bestMatchRank(results[j].Matches)
+		if left == right {
+			return results[i].Artist.Name < results[j].Artist.Name
+		}
+		return left < right
+	})
+
+	return results
+}
+
+func searchArtistMatches(artist models.Artist, locations []string, normalizedQuery string) []SearchSuggestion {
+	matches := make([]SearchSuggestion, 0)
+	if containsSearch(artist.Name, normalizedQuery) {
+		matches = append(matches, SearchSuggestion{Value: artist.Name, Type: "artist/band"})
+	}
+
+	for _, member := range artist.Members {
+		if containsSearch(member, normalizedQuery) {
+			matches = append(matches, SearchSuggestion{Value: member, Type: "member"})
+		}
+	}
+
+	for _, location := range locations {
+		if containsSearch(location, normalizedQuery) || containsSearch(formatLocation(location), normalizedQuery) {
+			matches = append(matches, SearchSuggestion{Value: location, Type: "location"})
+		}
+	}
+
+	if containsSearch(artist.FirstAlbum, normalizedQuery) {
+		matches = append(matches, SearchSuggestion{Value: artist.FirstAlbum, Type: "first album"})
+	}
+
+	creationDate := strconv.Itoa(artist.CreationDate)
+	if containsSearch(creationDate, normalizedQuery) {
+		matches = append(matches, SearchSuggestion{Value: creationDate, Type: "creation date"})
 	}
 
 	return matches
 }
 
-func suggestArtists(artists []models.Artist, query string) []models.Artist {
-	normalizedQuery := normalize(query)
-	queryTokens := uniqueTokens(query)
-
-	type scoredArtist struct {
-		artist models.Artist
-		score  int
+func buildSearchSuggestions(artists []models.Artist, locations []models.Location, query string, limit int) []SearchSuggestion {
+	normalizedQuery := normalizeSearch(query)
+	if normalizedQuery == "" || limit <= 0 {
+		return nil
 	}
 
-	var scored []scoredArtist
+	locationMap := buildRawLocationMap(locations)
+	seen := make(map[string]bool)
+	suggestions := make([]SearchSuggestion, 0, limit)
 	for _, artist := range artists {
-		name := normalize(artist.Name)
-		score := tokenMatchScore(queryTokens, uniqueTokens(artist.Name))
-
-		if distance := levenshtein(normalizedQuery, name); distance <= 2 {
-			score += 3
-		}
-
-		if score >= suggestionThreshold(len(queryTokens)) {
-			scored = append(scored, scoredArtist{
-				artist: artist,
-				score:  score,
-			})
+		for _, candidate := range searchArtistMatches(artist, locationMap[artist.ID], normalizedQuery) {
+			key := strings.ToLower(candidate.Type + "\x00" + candidate.Value)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			suggestions = append(suggestions, candidate)
 		}
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].artist.Name < scored[j].artist.Name
+	sort.SliceStable(suggestions, func(i, j int) bool {
+		left := suggestionRank(suggestions[i])
+		right := suggestionRank(suggestions[j])
+		if left == right {
+			if suggestions[i].Value == suggestions[j].Value {
+				return suggestions[i].Type < suggestions[j].Type
+			}
+			return suggestions[i].Value < suggestions[j].Value
 		}
-		return scored[i].score > scored[j].score
+		return left < right
 	})
 
-	limit := 6
-	if len(scored) < limit {
-		limit = len(scored)
-	}
-
-	suggestions := make([]models.Artist, 0, limit)
-	for i := 0; i < limit; i++ {
-		suggestions = append(suggestions, scored[i].artist)
+	if len(suggestions) > limit {
+		return suggestions[:limit]
 	}
 
 	return suggestions
 }
 
-func tokenMatchScore(queryTokens, nameTokens []string) int {
-	score := 0
-	for _, queryToken := range queryTokens {
-		for _, nameToken := range nameTokens {
-			switch {
-			case queryToken == nameToken:
-				score += 3
-				goto nextToken
-			case strings.Contains(nameToken, queryToken), strings.Contains(queryToken, nameToken):
-				score += 2
-				goto nextToken
-			}
-		}
-	nextToken:
+func buildRawLocationMap(locations []models.Location) map[int][]string {
+	locationMap := make(map[int][]string, len(locations))
+	for _, location := range locations {
+		locationMap[location.ID] = append([]string(nil), location.Locations...)
 	}
 
-	return score
+	return locationMap
 }
 
-func suggestionThreshold(tokenCount int) int {
-	switch {
-	case tokenCount >= 3:
-		return 4
-	case tokenCount == 2:
-		return 3
-	default:
+func describeMatches(matches []SearchSuggestion) string {
+	if len(matches) == 0 {
+		return ""
+	}
+
+	limit := 3
+	if len(matches) < limit {
+		limit = len(matches)
+	}
+
+	parts := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		parts = append(parts, fmt.Sprintf("%s -> %s", matches[i].Value, matches[i].Type))
+	}
+	if len(matches) > limit {
+		parts = append(parts, fmt.Sprintf("+%d more", len(matches)-limit))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func containsSearch(value, normalizedQuery string) bool {
+	return strings.Contains(normalizeSearch(value), normalizedQuery)
+}
+
+func bestMatchRank(matches []SearchSuggestion) int {
+	rank := 99
+	for _, match := range matches {
+		if current := suggestionRank(match); current < rank {
+			rank = current
+		}
+	}
+
+	return rank
+}
+
+func suggestionRank(suggestion SearchSuggestion) int {
+	switch suggestion.Type {
+	case "artist/band":
+		return 0
+	case "member":
+		return 1
+	case "location":
 		return 2
+	case "first album":
+		return 3
+	case "creation date":
+		return 4
+	default:
+		return 5
 	}
 }
 
-func uniqueTokens(value string) []string {
-	parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-
-	seen := make(map[string]bool)
-	tokens := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part == "" || seen[part] {
-			continue
-		}
-
-		seen[part] = true
-		tokens = append(tokens, part)
-	}
-
-	return tokens
-}
-
-func normalize(value string) string {
-	return strings.Join(uniqueTokens(value), " ")
+func normalizeSearch(value string) string {
+	value = strings.ReplaceAll(strings.ToLower(value), "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func formatLocation(location string) string {
@@ -795,60 +887,4 @@ func plural(count int) string {
 	}
 
 	return "s"
-}
-
-func levenshtein(a, b string) int {
-	if a == b {
-		return 0
-	}
-
-	if a == "" {
-		return len([]rune(b))
-	}
-
-	if b == "" {
-		return len([]rune(a))
-	}
-
-	aRunes := []rune(a)
-	bRunes := []rune(b)
-
-	previous := make([]int, len(bRunes)+1)
-	for j := range previous {
-		previous[j] = j
-	}
-
-	for i, aRune := range aRunes {
-		current := make([]int, len(bRunes)+1)
-		current[0] = i + 1
-
-		for j, bRune := range bRunes {
-			cost := 0
-			if aRune != bRune {
-				cost = 1
-			}
-
-			current[j+1] = min3(
-				current[j]+1,
-				previous[j+1]+1,
-				previous[j]+cost,
-			)
-		}
-
-		previous = current
-	}
-
-	return previous[len(bRunes)]
-}
-
-func min3(a, b, c int) int {
-	if a < b && a < c {
-		return a
-	}
-
-	if b < c {
-		return b
-	}
-
-	return c
 }

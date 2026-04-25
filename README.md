@@ -1,19 +1,24 @@
-# Groupie Tracker Geolocalization
+# Groupie Tracker Search Bar
 
-Groupie Tracker Geolocalization is a Go web application that fetches artist, location, date, and relation data from the public Groupie Tracker API, converts concert addresses into geographic coordinates, and displays each artist's tour stops on an interactive map.
+Groupie Tracker Search Bar is a Go web application that fetches music data from the public Groupie Tracker API and lets users search the full data system from one responsive interface.
 
-The artist detail page shows geocoded markers and connects them with a line in historical order using the earliest concert date for each location.
+The search supports artist/band names, members, concert locations, first album dates, and creation dates. Input is case-insensitive, and the search field provides typed suggestions that identify each suggestion type, such as `Billie Joe Armstrong -> member` or `saitama-japan -> location`.
 
 ## Features
 
 - Backend written in Go using only standard Go packages
-- Artist search with exact matches and similar suggestions
-- Artist detail pages with lineup, API locations, concert dates, and relation timeline
-- Server-side geocoding through the Nominatim/OpenStreetMap API
-- Local fallback coordinates for the school audit dataset so maps remain stable if geocoding is unavailable
-- Interactive Leaflet/OpenStreetMap frontend map with markers and connected route lines
+- Search by artist/band name
+- Search by band member
+- Search by concert location
+- Search by first album date
+- Search by creation date
+- Case-insensitive matching
+- Live typing suggestions from a JSON endpoint
+- Suggestion labels for `artist/band`, `member`, `location`, `first album`, and `creation date`
+- Artist cards showing the matched field when a search is active
+- Artist detail pages with locations, dates, relation timeline, and geolocalized map route
 - Styled error pages and HTTP method/status handling
-- Unit tests for API handling, geocoding, route ordering, templates, and search helpers
+- Unit tests for search behavior, suggestions, API handling, templates, and route errors
 
 ## Tech Stack
 
@@ -41,7 +46,9 @@ The artist detail page shows geocoded markers and connects them with a line in h
 |   `-- models.go
 |-- static/
 |   |-- map.js
-|   `-- style.css
+|   |-- search.js
+|   |-- style.css
+|   `-- ui.js
 |-- templates/
 |   |-- artist.html
 |   |-- error.html
@@ -63,7 +70,18 @@ Open:
 http://localhost:8080
 ```
 
-Search for artists such as `Queen`, `ACDC`, `Imagine Dragons`, `Guns N' Roses`, `Post Malone`, or `Red Hot Chili Peppers`, then open the artist detail page to see mapped concert markers and the connected route.
+Try searches such as:
+
+- `Billie Joe`
+- `Japan`
+- `Scorpions`
+- `Jimi Hendrix`
+- `Phil Collins`
+- `london-uk`
+- `queen`
+- `05-08-1967`
+- `1973`
+- `1965`
 
 ## Test
 
@@ -79,14 +97,11 @@ $env:GOCACHE = Join-Path (Get-Location) ".gocache"; go test ./...
 
 ## Routes
 
-- `/` shows the geolocalization dashboard and artist search
-- `/artist?id=<id>` shows one artist with geocoded concert markers
-- `/search?q=<name>` searches artists by name
+- `/` shows the search dashboard and all artists
+- `/search?q=<text>` searches across artist names, members, locations, first album dates, and creation dates
+- `/suggest?q=<text>` returns JSON suggestions for the active search text
+- `/artist?id=<id>` shows one artist with detailed data and a map
 - Unknown routes return a styled `404 Not Found` page
-
-## Notes
-
-The Go backend performs address-to-coordinate conversion with a geocoding API. Leaflet is used only in the browser to render the map from coordinates prepared by the server.
 
 ## Authors
 
