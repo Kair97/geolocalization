@@ -1,0 +1,223 @@
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"groupie-tracker/api"
+	"groupie-tracker/models"
+)
+
+func TestBuildArtistCardsUsesLocationAndDateCounts(t *testing.T) {
+	artists := []models.Artist{
+		{ID: 1, Name: "Queen"},
+		{ID: 2, Name: "Gorillaz"},
+	}
+
+	locations := []models.Location{
+		{ID: 1, Locations: []string{"london-uk", "paris-france"}},
+		{ID: 2, Locations: []string{"tokyo-japan"}},
+	}
+
+	dates := []models.Date{
+		{ID: 1, Dates: []string{"02-03-2001", "01-03-2001", "05-03-2001"}},
+		{ID: 2, Dates: []string{"10-04-2002"}},
+	}
+
+	cards := buildArtistCards(artists, locations, dates)
+	if len(cards) != 2 {
+		t.Fatalf("expected 2 cards, got %d", len(cards))
+	}
+
+	if cards[0].LocationCount != 2 || cards[0].DateCount != 3 {
+		t.Fatalf("expected first artist counts 2 locations and 3 dates, got %+v", cards[0])
+	}
+
+	if cards[1].LocationCount != 1 || cards[1].DateCount != 1 {
+		t.Fatalf("expected second artist counts 1 location and 1 date, got %+v", cards[1])
+	}
+}
+
+func TestBuildVisualizationDataSummarizesArtistsAndCharts(t *testing.T) {
+	artists := []models.Artist{
+		{ID: 1, Name: "Queen", Members: []string{"Freddie Mercury", "Brian May"}, CreationDate: 1970},
+		{ID: 2, Name: "Daft Punk", Members: []string{"Thomas Bangalter", "Guy-Manuel de Homem-Christo"}, CreationDate: 1993},
+		{ID: 3, Name: "Gorillaz", Members: []string{"Damon Albarn"}, CreationDate: 1998},
+	}
+
+	locations := []models.Location{
+		{ID: 1, Locations: []string{"london-uk", "paris-france", "tokyo-japan"}},
+		{ID: 2, Locations: []string{"paris-france"}},
+		{ID: 3, Locations: []string{"new_york-usa", "berlin-germany"}},
+	}
+
+	dates := []models.Date{
+		{ID: 1, Dates: []string{"02-03-2001", "01-03-2001"}},
+		{ID: 2, Dates: []string{"10-04-2002"}},
+		{ID: 3, Dates: []string{"11-04-2002", "12-04-2002", "13-04-2002"}},
+	}
+
+	data := buildVisualizationData(artists, locations, dates)
+
+	if data.TotalArtists != 3 || data.TotalLocations != 6 || data.TotalConcertDates != 6 {
+		t.Fatalf("unexpected totals: %+v", data)
+	}
+
+	if data.AverageMembers != "1.7" {
+		t.Fatalf("expected average members 1.7, got %q", data.AverageMembers)
+	}
+
+	if data.EarliestCreation != 1970 || data.LatestCreation != 1998 {
+		t.Fatalf("unexpected era range: %+v", data)
+	}
+
+	if len(data.Decades) != 2 || data.Decades[0].Label != "1970s" || data.Decades[1].Count != 2 {
+		t.Fatalf("unexpected decade buckets: %+v", data.Decades)
+	}
+
+	if len(data.TopTouringArtists) != 3 || data.TopTouringArtists[0].Name != "Queen" || data.TopTouringArtists[0].BarWidth != 100 {
+		t.Fatalf("unexpected top touring artists: %+v", data.TopTouringArtists)
+	}
+}
+
+func TestBuildConcertsAddsActivityMetrics(t *testing.T) {
+	relations := []models.Relation{
+		{
+			ID: 1,
+			DatesLocations: map[string][]string{
+				"paris-france": []string{"02-03-2001", "01-03-2001"},
+				"london-uk":    []string{"10-04-2002"},
+			},
+		},
+	}
+
+	concerts := buildConcerts(1, relations)
+	if len(concerts) != 2 {
+		t.Fatalf("expected 2 concerts, got %d", len(concerts))
+	}
+
+	if concerts[0].Location != "london-uk" || concerts[0].DateCount != 1 {
+		t.Fatalf("expected concerts sorted by formatted location, got %+v", concerts)
+	}
+
+	if concerts[1].BarWidth != 100 {
+		t.Fatalf("expected largest activity bar to be 100, got %+v", concerts[1])
+	}
+}
+
+func TestIndexHandlerRendersStyled404ForUnknownRoute(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	root := filepath.Dir(wd)
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("failed to enter project root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("failed to restore working directory: %v", err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/missing-page", nil)
+	rec := httptest.NewRecorder()
+
+	IndexHandler(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+
+	if body := rec.Body.String(); !strings.Contains(body, "Page not found") || !strings.Contains(body, "Back to dashboard") {
+		t.Fatalf("expected styled 404 page, got %q", body)
+	}
+}
+
+func TestArtistHandlerReturns404ForUnknownArtist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/artists/99999":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	previousBaseURL := api.BaseURL
+	api.BaseURL = server.URL + "/api"
+	t.Cleanup(func() {
+		api.BaseURL = previousBaseURL
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/artist?id=99999", nil)
+	rec := httptest.NewRecorder()
+
+	ArtistHandler(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestTemplatesRenderWithEndpointData(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	root := filepath.Dir(wd)
+
+	indexRecorder := httptest.NewRecorder()
+	indexData := IndexPageData{
+		Query: "queen",
+		Artists: []ArtistCard{
+			{
+				Artist: models.Artist{
+					ID:           1,
+					Name:         "Queen",
+					Image:        "queen.jpg",
+					Members:      []string{"Freddie Mercury", "Brian May"},
+					CreationDate: 1970,
+					FirstAlbum:   "13-07-1973",
+				},
+				LocationCount: 2,
+				DateCount:     3,
+			},
+		},
+	}
+
+	if err := renderTemplate(indexRecorder, filepath.Join(root, "templates", "index.html"), indexData); err != nil {
+		t.Fatalf("expected index template to render, got %v", err)
+	}
+
+	artistRecorder := httptest.NewRecorder()
+	artistData := ArtistPageData{
+		Artist: models.Artist{
+			ID:           1,
+			Name:         "Queen",
+			Image:        "queen.jpg",
+			Members:      []string{"Freddie Mercury", "Brian May"},
+			CreationDate: 1970,
+			FirstAlbum:   "13-07-1973",
+		},
+		Locations: []string{"london-uk", "paris-france"},
+		Dates:     []string{"01-03-2001", "02-03-2001"},
+		Concerts: []ConcertStop{
+			{
+				Location: "london-uk",
+				Dates:    []string{"01-03-2001"},
+			},
+		},
+	}
+
+	if err := renderTemplate(artistRecorder, filepath.Join(root, "templates", "artist.html"), artistData); err != nil {
+		t.Fatalf("expected artist template to render, got %v", err)
+	}
+}
